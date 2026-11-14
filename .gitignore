@@ -1,0 +1,50 @@
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+# Terraform working directories
+**/.terraform/*
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+
+# Terraform plans
+*.tfplan
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Sensitive variable files if you later create them
+*.auto.tfvars
+*.auto.tfvars.json
+
+# CLI configuration
+.terraformrc
+terraform.rc
+
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+.vscode/
+*.user
+.env
+
+
+# .NET
+**/bin/
+**/obj/
+
+# Angular / Node
+**/node_modules/
+**/.angular/
+**/dist/
+
+# Environment
+.env
+.env.*
+!.env.example

@@ -1,0 +1,602 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  dotnetVersion: '8.x'
+  nodeVersion: '20.x'
+
+stages:
+
+# ==========================================================
+# STAGE 1 - BUILD, TEST AND SONARQUBE
+# ==========================================================
+
+- stage: BuildAndTest
+  displayName: 'Build, Test and SonarQube'
+
+  jobs:
+
+  # ==========================================================
+  # BACKEND
+  # ==========================================================
+
+  - job: Backend
+    displayName: 'Backend - Build, Test and SonarQube'
+
+    steps:
+
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    # --------------------------------------------------------
+    # INSTALL .NET SDK
+    # --------------------------------------------------------
+
+    - task: UseDotNet@2
+      displayName: 'Install .NET SDK'
+      inputs:
+        packageType: 'sdk'
+        version: '$(dotnetVersion)'
+
+    # --------------------------------------------------------
+    # SONARQUBE - PREPARE
+    # --------------------------------------------------------
+
+    - task: SonarQubePrepare@8
+      displayName: 'Prepare SonarQube Analysis'
+      inputs:
+        SonarQube: 'sonarqube-connection'
+        scannerMode: 'dotnet'
+        projectKey: 'enterprise-3tier-devsecops'
+        projectName: 'Enterprise 3-Tier DevSecOps'
+
+    # --------------------------------------------------------
+    # RESTORE .NET DEPENDENCIES
+    # --------------------------------------------------------
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore .NET dependencies'
+      inputs:
+        command: 'restore'
+        projects: |
+          app/backend/EnterpriseTask.Api/EnterpriseTask.Api.csproj
+          tests/EnterpriseTask.Api.Tests/EnterpriseTask.Api.Tests.csproj
+
+    # --------------------------------------------------------
+    # BUILD .NET API
+    # --------------------------------------------------------
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build .NET API'
+      inputs:
+        command: 'build'
+        projects: 'app/backend/EnterpriseTask.Api/EnterpriseTask.Api.csproj'
+        arguments: '--configuration Release --no-restore'
+
+    # --------------------------------------------------------
+    # RUN .NET TESTS
+    # --------------------------------------------------------
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Run .NET tests'
+      inputs:
+        command: 'test'
+        projects: 'tests/EnterpriseTask.Api.Tests/EnterpriseTask.Api.Tests.csproj'
+        arguments: '--configuration Release --no-restore --logger trx --results-directory $(Agent.TempDirectory)'
+        publishTestResults: false
+
+    # --------------------------------------------------------
+    # PUBLISH .NET TEST RESULTS
+    # --------------------------------------------------------
+
+    - task: PublishTestResults@2
+      displayName: 'Publish .NET test results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: '$(Agent.TempDirectory)/*.trx'
+        failTaskOnFailedTests: true
+
+    # --------------------------------------------------------
+    # SONARQUBE - ANALYZE
+    # --------------------------------------------------------
+
+    - task: SonarQubeAnalyze@7
+      displayName: 'Run SonarQube Analysis'
+      inputs:
+        jdkversion: 'JAVA_HOME_17_X64'
+
+    # --------------------------------------------------------
+    # SONARQUBE - QUALITY GATE
+    # --------------------------------------------------------
+
+    - task: SonarQubePublish@7
+      displayName: 'Publish SonarQube Quality Gate'
+      inputs:
+        pollingTimeoutSec: '300'
+
+
+  # ==========================================================
+  # FRONTEND
+  # ==========================================================
+
+  - job: Frontend
+    displayName: 'Frontend - Build and Test'
+
+    steps:
+
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    # --------------------------------------------------------
+    # INSTALL NODE.JS
+    # --------------------------------------------------------
+
+    - task: UseNode@1
+      displayName: 'Install Node.js'
+      inputs:
+        version: '$(nodeVersion)'
+
+    # --------------------------------------------------------
+    # INSTALL FRONTEND DEPENDENCIES
+    # --------------------------------------------------------
+
+    - script: |
+        cd app/frontend/enterprise-task-ui
+        npm ci
+      displayName: 'Install frontend dependencies'
+
+    # --------------------------------------------------------
+    # BUILD ANGULAR APPLICATION
+    # --------------------------------------------------------
+
+    - script: |
+        cd app/frontend/enterprise-task-ui
+        npm run build
+      displayName: 'Build Angular application'
+
+    # --------------------------------------------------------
+    # RUN ANGULAR TESTS
+    # --------------------------------------------------------
+
+    - script: |
+        cd app/frontend/enterprise-task-ui
+        npm test -- --no-watch --browsers=ChromeHeadless
+      displayName: 'Run Angular tests'
+
+
+
+ # ==========================================================
+# STAGE 2 - SECURITY SCAN
+# ==========================================================
+
+- stage: SecurityScan
+  displayName: 'Security Scanning'
+  dependsOn: BuildAndTest
+  condition: succeeded()
+
+  jobs:
+
+  - job: SecurityScan
+    displayName: 'Trivy - Repository Security Scan'
+
+    steps:
+
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    # --------------------------------------------------------
+    # INSTALL TRIVY
+    # --------------------------------------------------------
+
+    - bash: |
+        chmod +x scripts/install-trivy.sh
+        ./scripts/install-trivy.sh
+      displayName: 'Install Trivy'
+
+    # --------------------------------------------------------
+    # RUN TRIVY SCAN
+    # --------------------------------------------------------
+
+    - bash: |
+        trivy fs \
+          --scanners vuln,secret,misconfig \
+          --severity HIGH,CRITICAL \
+          --exit-code 0 \
+          --ignore-unfixed \
+          .
+      displayName: 'Trivy Security Scan'
+
+
+
+ # ==========================================================
+# STAGE 3 - DOCKER BUILD
+# ==========================================================
+
+- stage: DockerBuild
+  displayName: 'Docker Build'
+  dependsOn: SecurityScan
+  condition: succeeded()
+
+  jobs:
+
+  - job: BuildImages
+    displayName: 'Build Docker Images'
+
+    steps:
+
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    # --------------------------------------------------------
+    # BUILD FRONTEND IMAGE
+    # --------------------------------------------------------
+
+    - bash: |
+        docker build \
+          -t acrenterprise3tierdev.azurecr.io/enterprise-task-frontend:$(Build.BuildId) \
+          -t acrenterprise3tierdev.azurecr.io/enterprise-task-frontend:latest \
+          app/frontend/enterprise-task-ui
+      displayName: 'Build Frontend Docker Image'
+
+    # --------------------------------------------------------
+    # BUILD BACKEND IMAGE
+    # --------------------------------------------------------
+
+    - bash: |
+        docker build \
+          -t acrenterprise3tierdev.azurecr.io/enterprise-task-api:$(Build.BuildId) \
+          -t acrenterprise3tierdev.azure.io/enterprise-task-api:latest \
+          app/backend/EnterpriseTask.Api
+      displayName: 'Build Backend Docker Image'
+
+    # --------------------------------------------------------
+    # SHOW BUILT IMAGES
+    # --------------------------------------------------------
+
+    - bash: |
+        docker images | grep enterprise-task
+      displayName: 'List Docker Images'
+
+
+  # --------------------------------------------------------
+    # INSTALL TRIVY
+    # --------------------------------------------------------
+
+    - bash: |
+        chmod +x scripts/install-trivy.sh
+        ./scripts/install-trivy.sh
+      displayName: 'Install Trivy'
+
+      # --------------------------------------------------------
+      #  TRIVY SCAN - FRONTEND 
+      # --------------------------------------------------------
+
+
+    # --------------------------------------------------------
+    # SCAN BACKEND IMAGE
+    # --------------------------------------------------------
+
+    - bash: |
+        trivy image \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --exit-code 0 \
+          acrenterprise3tierdev.azurecr.io/enterprise-task-api:$(Build.BuildId)
+      displayName: 'Trivy - Scan Backend Image'
+
+    # --------------------------------------------------------
+    # SCAN FRONTEND IMAGE
+    # --------------------------------------------------------
+
+    - bash: |
+        trivy image \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --exit-code 0 \
+          acrenterprise3tierdev.azurecr.io/enterprise-task-frontend:$(Build.BuildId)
+      displayName: 'Trivy - Scan Frontend Image'
+
+
+      # --------------------------------------------------------
+    # LOGIN TO AZURE CONTAINER REGISTRY
+    # --------------------------------------------------------
+
+    - task: AzureCLI@2
+      displayName: 'Login to Azure Container Registry'
+      inputs:
+        azureSubscription: 'sc-app-dev'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name acrenterprise3tierdev
+
+
+    # --------------------------------------------------------
+    # PUSH BACKEND IMAGE
+    # --------------------------------------------------------
+
+    - bash: |
+        docker push acrenterprise3tierdev.azurecr.io/enterprise-task-api:$(Build.BuildId)
+      displayName: 'Push Backend Image to ACR'
+
+
+    # --------------------------------------------------------
+    # PUSH FRONTEND IMAGE
+    # --------------------------------------------------------
+
+    - bash: |
+        docker push acrenterprise3tierdev.azurecr.io/enterprise-task-frontend:$(Build.BuildId)
+      displayName: 'Push Frontend Image to ACR'
+
+# ==========================================================
+# STAGE 4 - DEPLOY TO AKS
+# ==========================================================
+
+- stage: DeployToAKS
+  displayName: 'Deploy to AKS'
+  dependsOn: DockerBuild
+  condition: succeeded()
+
+  jobs:
+
+  - deployment: DeployApplication
+    displayName: 'Deploy Application to AKS'
+
+    environment: 'enterprise-dev'
+
+    strategy:
+      runOnce:
+        deploy:
+
+          steps:
+
+          - checkout: self
+            displayName: 'Checkout repository'
+
+
+          # ==================================================
+          # DEPLOY BACKEND
+          # ==================================================
+
+          - task: KubernetesManifest@1
+            displayName: 'Deploy Backend to AKS'
+            inputs:
+              action: 'deploy'
+              connectionType: 'azureResourceManager'
+              azureSubscriptionConnection: 'sc-app-dev'
+              azureResourceGroup: 'rg-app-dev'
+              kubernetesCluster: 'aks-enterprise-dev'
+              namespace: 'enterprise-dev'
+
+              manifests: |
+                kubernetes/k8s/api/deployment.yaml
+                kubernetes/k8s/api/service.yaml
+
+              containers: |
+                acrenterprise3tierdev.azurecr.io/enterprise-task-api:$(Build.BuildId)
+
+
+          # ==================================================
+          # DEPLOY FRONTEND
+          # ==================================================
+
+          - task: KubernetesManifest@1
+            displayName: 'Deploy Frontend to AKS'
+            inputs:
+              action: 'deploy'
+              connectionType: 'azureResourceManager'
+              azureSubscriptionConnection: 'sc-app-dev'
+              azureResourceGroup: 'rg-app-dev'
+              kubernetesCluster: 'aks-enterprise-dev'
+              namespace: 'enterprise-dev'
+
+              manifests: |
+                kubernetes/k8s/frontend/deployment.yaml
+                kubernetes/k8s/frontend/service.yaml
+
+              containers: |
+                acrenterprise3tierdev.azurecr.io/enterprise-task-frontend:$(Build.BuildId)
+
+
+          # # ==================================================
+          # # VERIFY BACKEND ROLLOUT
+          # # ==================================================
+
+          # - bash: |
+
+          #     echo "=========================================="
+          #     echo "Verifying Backend Rollout"
+          #     echo "=========================================="
+
+          #     kubectl rollout status \
+          #       deployment/enterprise-task-api \
+          #       -n enterprise-dev \
+          #       --timeout=180s
+
+          #   displayName: 'Verify Backend Rollout'
+
+
+          # # ==================================================
+          # # VERIFY FRONTEND ROLLOUT
+          # # ==================================================
+
+          # - bash: |
+
+          #     echo "=========================================="
+          #     echo "Verifying Frontend Rollout"
+          #     echo "=========================================="
+
+          #     kubectl rollout status \
+          #       deployment/enterprise-task-frontend \
+          #       -n enterprise-dev \
+          #       --timeout=180s
+
+          #   displayName: 'Verify Frontend Rollout'
+
+
+
+          # ==================================================
+          # DEPLOY APPLICATION GATEWAY INGRESS
+          # ==================================================
+
+          - task: KubernetesManifest@1
+            displayName: 'Deploy Application Gateway Ingress'
+            inputs:
+              action: 'deploy'
+              connectionType: 'azureResourceManager'
+              azureSubscriptionConnection: 'sc-app-dev'
+              azureResourceGroup: 'rg-app-dev'
+              kubernetesCluster: 'aks-enterprise-dev'
+              namespace: 'enterprise-dev'
+
+              manifests: |
+                kubernetes/k8s/ingress/ingress.yaml
+
+
+
+
+
+
+          # ==================================================
+          # VERIFY AKS DEPLOYMENT
+          # ==================================================
+
+          - task: AzureCLI@2
+            displayName: 'Verify AKS Deployment'
+            inputs:
+              azureSubscription: 'sc-app-dev'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+
+              inlineScript: |
+
+                set -e
+
+                echo "=========================================="
+                echo "Creating AKS kubeconfig"
+                echo "=========================================="
+
+                KUBECONFIG_FILE="$(Agent.TempDirectory)/aks-kubeconfig"
+
+                az aks get-credentials \
+                  --resource-group rg-app-dev \
+                  --name aks-enterprise-dev \
+                  --file "$KUBECONFIG_FILE" \
+                  --overwrite-existing
+
+                export KUBECONFIG="$KUBECONFIG_FILE"
+
+                echo ""
+                echo "=========================================="
+                echo "AKS CLUSTER INFO"
+                echo "=========================================="
+
+                kubectl cluster-info
+
+                echo ""
+                echo "=========================================="
+                echo "AKS NODES"
+                echo "=========================================="
+
+                kubectl get nodes
+
+                echo ""
+                echo "=========================================="
+                echo "BACKEND ROLLOUT"
+                echo "=========================================="
+
+                kubectl rollout status \
+                  deployment/enterprise-task-api \
+                  -n enterprise-dev \
+                  --timeout=180s
+
+                echo ""
+                echo "Backend rollout successful."
+
+                echo ""
+                echo "=========================================="
+                echo "FRONTEND ROLLOUT"
+                echo "=========================================="
+
+                kubectl rollout status \
+                  deployment/enterprise-task-frontend \
+                  -n enterprise-dev \
+                  --timeout=180s
+
+                echo ""
+                echo "Frontend rollout successful."
+
+                echo ""
+                echo "=========================================="
+                echo "SERVICES"
+                echo "=========================================="
+
+                kubectl get services \
+                  -n enterprise-dev
+
+
+
+
+                echo ""
+                echo "=========================================="
+                echo "INGRESS"
+                echo "=========================================="
+
+                kubectl get ingress \
+                  -n enterprise-dev
+
+                echo ""
+                echo "=========================================="
+                echo "INGRESS DETAILS"
+                echo "=========================================="
+
+                kubectl describe ingress \
+                  enterprise-ingress \
+                  -n enterprise-dev
+
+
+                echo ""
+                echo "=========================================="
+                echo "DEPLOYMENTS"
+                echo "=========================================="
+
+                kubectl get deployments \
+                  -n enterprise-dev
+
+                echo ""
+                echo "=========================================="
+                echo "BACKEND IMAGE"
+                echo "=========================================="
+
+                kubectl get deployment enterprise-task-api \
+                  -n enterprise-dev \
+                  -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+                echo ""
+
+                echo ""
+                echo "=========================================="
+                echo "FRONTEND IMAGE"
+                echo "=========================================="
+
+                kubectl get deployment enterprise-task-frontend \
+                  -n enterprise-dev \
+                  -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+                echo ""
+
+                echo ""
+                echo "=========================================="
+                echo "AKS DEPLOYMENT VERIFICATION COMPLETED"
+                echo "=========================================="

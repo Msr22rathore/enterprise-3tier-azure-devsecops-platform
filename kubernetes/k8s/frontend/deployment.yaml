@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enterprise-task-frontend
+  namespace: enterprise-dev
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: enterprise-task-frontend
+  template:
+    metadata:
+      labels:
+        app: enterprise-task-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: acraiopsdev2026.azurecr.io/enterprise-task-frontend:dev
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 80
+              protocol: TCP
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20

@@ -1,0 +1,2 @@
+import { Component } from '@angular/core'; import { RouterLink,RouterOutlet } from '@angular/router';
+@Component({selector:'app-root',standalone:true,imports:[RouterLink,RouterOutlet],template:`<header><div><h1>Enterprise Task Platform</h1><small>Angular + ASP.NET Core + EF Core</small></div><nav><a routerLink="/">Dashboard</a><a routerLink="/tasks">Tasks</a></nav></header><main><router-outlet/></main>`}) export class AppComponent{}

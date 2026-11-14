@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: enterprise-ingress
+  namespace: enterprise-dev
+  annotations:
+    appgw.ingress.kubernetes.io/appgw-ssl-certificate: enterpriseapitask-tls
+spec:
+  ingressClassName: azure-application-gateway
+
+  rules:
+    - host: enterpriseapitask.online
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: enterprise-task-api
+                port:
+                  number: 80
+
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: enterprise-task-frontend
+                port:
+                  number: 80

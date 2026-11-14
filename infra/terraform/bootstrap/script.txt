@@ -1,0 +1,26 @@
+# Variables
+$RG_NAME = "rg-terraform-state"
+$STORAGE_ACCOUNT = "stterraformstate$(Get-Random)"
+$CONTAINER_NAME = "tfstate"
+$LOCATION = "centralindia"
+
+# Create Resource Group
+az group create `
+  --name $RG_NAME `
+  --location $LOCATION
+
+# Create Storage Account
+az storage account create `
+  --name $STORAGE_ACCOUNT `
+  --resource-group $RG_NAME `
+  --location $LOCATION `
+  --sku Standard_LRS `
+  --kind StorageV2 `
+  --min-tls-version TLS1_2 `
+  --allow-blob-public-access false
+
+# Create Blob Container
+az storage container create `
+  --name $CONTAINER_NAME `
+  --account-name $STORAGE_ACCOUNT `
+  --auth-mode login
